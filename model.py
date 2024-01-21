@@ -1,6 +1,6 @@
 import openai
 from pymongo import MongoClient
-import config_model
+from configs import config_model
 
 
 class MongoDBHandler:

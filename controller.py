@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 from enum import Enum
-import config_controller
+from configs import config_controller
 import model
 
 app = Flask(__name__)
