@@ -1,135 +1,101 @@
 import openai
 from pymongo import MongoClient
 import requests
-from common import ClientType
-from abc import ABC, abstractmethod
-
-
-class Model:
-    def __init__(self, logger, config):
-        self.logger = logger
-        self.db_handler = MongoDBHandler(config.MongoDBConfig.URI, config.MongoDBConfig.DB_NAME)
-        self.chatbot = ChatBot("gpt-4-1106-preview", self.db_handler, config.OpenAIConfig.API_KEY, history_length=6)
-        self.response_generator = ResponseGenerator(self.chatbot, self.logger)
-        self.response_handler = ResponseSender(config.ManychatConfig.URL, config.ManychatConfig.API_KEY)
-        
-    def handle_message(self, normalized_request):
-        bot_response = self.response_generator.generate(normalized_request)
-        try:
-            status = self.response_handler.send_response(bot_response, normalized_request)
-            self.logger.warning(status)
-        except Exception as e:
-            self.logger.error(str(e))
-            status = {"Error": "Error in sending response"}
-        return status
-
-
-class ResponseSender:
-    def __init__(self, manychat_url, manychat_api_key):
-        self.manychat_url = manychat_url
-        self.manychat_api_key = manychat_api_key
-
-    def send_response(self, message_content, normalized_request_info):
-        client_type = normalized_request_info.get("client_type")
-        if client_type == ClientType.MANYCHAT:
-            subscriber_id = normalized_request_info.get("user_id")
-            headers = {
-                "Authorization": f"Bearer {self.manychat_api_key}",
-                "Content-Type": "application/json"
-            }
-            data = {
-                "subscriber_id": subscriber_id,
-                "data": {
-                    "version": "v2",
-                    "content": {
-                        "messages": [{"type": "text", "text": message_content}]
-                    }
-                }
-            }
-
-            try:
-                response = requests.post(self.manychat_url, json=data, headers=headers)
-                print(f"ManyChat Response: {response.json()}")
-                return response.json(), response.status_code
-            except requests.RequestException as e:
-                print(f"Error sending request to ManyChat: {e}")
-                return {"error": str(e)}, 500
-
-        elif client_type == ClientType.CHATFUEL:
-            response = {"messages": [{"text": message_content}]}
-            return jsonify(response), 200
-
-        else:
-            print("Unsupported client type.")
-            return {"Error": "Client type not supported"}, 400
 
 
 class MongoDBHandler:
-    def __init__(self, uri, db_name):
+    def __init__(self, uri: str, db_name: str):
         self.client = MongoClient(uri)
         self.db = self.client[db_name]
         self.collection = self.db.chat_histories
 
-    def get_last_messages(self, user_id, history_length):
-        query = {"user_id": user_id}
-        result = list(self.collection.find(query))
+    def fetch_recent_messages(self, user_id, limit):
+        document = self.collection.find_one(
+            {"user_id": user_id}, 
+            {'chat_history': {'$slice': -limit}}
+        )
+        return document['chat_history'] if document else []
 
-        if result:  # Check if the result is not empty
-            messages = result[0]['chat_history'][-history_length:]
-        else:
-            messages = []  # Return an empty list if no documents are found
-
-        return messages
-
-    def save_message(self, user_id, message):
-        if self.collection.count_documents({"user_id": user_id}) == 0:
-            self.collection.insert_one({"user_id": user_id, "chat_history": [message]})
-        else:
-            self.collection.update_one({"user_id": user_id}, {"$push": {"chat_history": message}})
+    def append_message(self, user_id, message):
+        self.collection.update_one(
+            {"user_id": user_id},
+            {"$addToSet": {"chat_history": message}},
+            upsert=True
+        )
 
 
-class ChatBot:
-    def __init__(self, model_name, db_handler, api_key, history_length=6):
+# Openai LLM chat model
+class OpenaiLlmEngine:
+    def __init__(self, model_name: str, api_key: str):
         self.model_name = model_name
-        self.history_length = history_length
-        self.db_handler = db_handler
         self.client = openai.OpenAI(api_key=api_key)
-        self.system_message = {"role": "system", "content": "Bądź miły nie przekraczaj max_words. Używaj emojis"}
 
-    def get_message(self, question, user_id):
-        chat_history_with_meta = self.db_handler.get_last_messages(user_id, self.history_length)
-        if len(chat_history_with_meta) > 0:
-            chat_history = chat_history_with_meta
-        else:
-            chat_history = []
-        chat_history.insert(0, self.system_message)
-        chat_history.append({"role": "user", "content": question + " <max_words=medium>"})
-        
+    def generate_response(self, system_prompt: str, messages: list):
+        messages = [{'role': 'system', 'content': system_prompt}] + messages
         chat_completion = self.client.chat.completions.create(
-            messages=chat_history,
+            messages=messages,
             model=self.model_name
         )
         assistant_response = chat_completion.choices[0].message.content
-
-        self.db_handler.save_message(user_id, {"role": "user", "content": question})
-        self.db_handler.save_message(user_id, {"role": "assistant", "content": assistant_response})
-
         return assistant_response
 
-    
-class ResponseGenerator:
-    def __init__(self, chatbot, logger):
-        self.chatbot = chatbot
-        self.logger = logger
 
-    def generate(self, normalized_request):
-        message = normalized_request["message"]
-        user_id = normalized_request["user_id"]
+# Dummy LLM chat model
+class DummyLlmEngine:
+    def generate_response(self, system_prompt: str, messages):
+        return "Hello. I am a dummy AI"
+
+
+class ManyChatResponseSender:
+    def __init__(self, manychat_url: str, manychat_api_key: str):
+        self.manychat_url = manychat_url
+        self.manychat_api_key = manychat_api_key
+
+    def send_response(self, message_content: str, subscriber_id: str):
+        headers = {
+            "Authorization": f"Bearer {self.manychat_api_key}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "subscriber_id": subscriber_id,
+            "data": {
+                "version": "v2",
+                "content": {
+                    "messages": [{"type": "text", "text": message_content}]
+                }
+            }
+        }
         try:
-            bot_response = self.chatbot.get_message(message, user_id)
-            self.logger.warning('Bot response: %s', bot_response)
-        except Exception as e:
-            self.logger.error(str(e))
-            bot_response = "Chyba mam przegrzane styki"
+            response = requests.post(self.manychat_url, json=data, headers=headers)
+            return response.json(), response.status_code
+        except requests.RequestException as e:
+            return {"error": str(e)}, 500
 
-        return bot_response
+
+class ChatModel:
+    def __init__(self, 
+                 mongo_db_handler: MongoDBHandler, 
+                 llm_engine: OpenaiLlmEngine | DummyLlmEngine, 
+                 manychat_response_handler: ManyChatResponseSender, 
+                 system_prompt: str,
+                 history_length: int = 6):
+        self.mongo_db_handler = mongo_db_handler
+        self.llm_engine = llm_engine
+        self.manychat_response_handler = manychat_response_handler
+        self.system_prompt = system_prompt
+        self.history_length = history_length
+
+    def handle_message(self, normalized_request):
+
+        user_id = normalized_request["user_id"]
+        last_message = normalized_request["message"]
+        last_prompt = last_message + " <max_words=medium>"
+
+        recent_messages = self.mongo_db_handler.fetch_recent_messages(user_id, self.history_length)
+        recent_messages = recent_messages + [{'role': 'user', 'content': last_prompt}]
+
+        assistant_response = self.llm_engine.generate_response(self.system_prompt, recent_messages)
+        self.mongo_db_handler.append_message(user_id, {"role": "user", "content": last_message})
+        self.mongo_db_handler.append_message(user_id, {"role": "assistant", "content": assistant_response})
+        status = self.manychat_response_handler.send_response(assistant_response, user_id)
+        return status

@@ -2,3 +2,7 @@
 .ipynb_checkpoints
 .vscode
 configs/
+custom_experiments/
+logs/
+archive/
+bu/
