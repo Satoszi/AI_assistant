@@ -11,20 +11,19 @@ class MongoDBHandler:
 
     def fetch_recent_messages(self, user_id, limit):
         document = self.collection.find_one(
-            {"user_id": user_id}, 
+            {"_id": user_id},  # Use _id for direct access
             {'chat_history': {'$slice': -limit}}
         )
         return document['chat_history'] if document else []
 
     def append_message(self, user_id, message):
         self.collection.update_one(
-            {"user_id": user_id},
-            {"$addToSet": {"chat_history": message}},
+            {"_id": user_id},  # Use _id for direct access
+            {"$push": {"chat_history": message}},
             upsert=True
         )
 
 
-# Openai LLM chat model
 class OpenaiLlmEngine:
     def __init__(self, model_name: str, api_key: str):
         self.model_name = model_name
@@ -38,12 +37,6 @@ class OpenaiLlmEngine:
         )
         assistant_response = chat_completion.choices[0].message.content
         return assistant_response
-
-
-# Dummy LLM chat model
-class DummyLlmEngine:
-    def generate_response(self, system_prompt: str, messages):
-        return "Hello. I am a dummy AI"
 
 
 class ManyChatResponseSender:
@@ -75,7 +68,7 @@ class ManyChatResponseSender:
 class ChatModel:
     def __init__(self, 
                  mongo_db_handler: MongoDBHandler, 
-                 llm_engine: OpenaiLlmEngine | DummyLlmEngine, 
+                 llm_engine: OpenaiLlmEngine, 
                  manychat_response_handler: ManyChatResponseSender, 
                  system_prompt: str,
                  history_length: int = 6):
@@ -98,4 +91,5 @@ class ChatModel:
         self.mongo_db_handler.append_message(user_id, {"role": "user", "content": last_message})
         self.mongo_db_handler.append_message(user_id, {"role": "assistant", "content": assistant_response})
         status = self.manychat_response_handler.send_response(assistant_response, user_id)
+
         return status
