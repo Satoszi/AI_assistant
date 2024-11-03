@@ -9,7 +9,9 @@ logger = log_config.setup_logging()
 app = Flask(__name__)
 
 
-model_name = "gpt-4-1106-preview"
+# model_name = "gpt-4-1106-preview"
+model_name = "gpt-4o"
+
 system_prompt = "Bądź miły nie przekraczaj max_words. Używaj emojis"
 history_length = 5
 
@@ -25,14 +27,20 @@ chat_model = ChatModel(mongo_db_handler,
                        )
 
 controller = Controller(chat_model)
-
+import json
 @app.route('/', methods=['POST'])
 def handle_request():
+    with open('saved_request.json', 'w') as f:
+        json.dump(request.json, f)
     response = controller.process(request)
     if isinstance(response, tuple):
         return jsonify(response[0]), response[1]
     else:
         return jsonify(response)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
